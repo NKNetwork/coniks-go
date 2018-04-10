@@ -44,3 +44,6 @@ server.pem
 coniks.db/
 coniks.pid
 coniksserver.log
+
+.DS_Store
+*~
