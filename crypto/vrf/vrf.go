@@ -1,7 +1,7 @@
-// Package vrf implements a verifiable random function using the Edwards form
-// of Curve25519, SHA3 and the Elligator map.
+// Package ed25519 implements a verifiable random function using the Edwards form
+// of Curve25519, SHA512 and the Elligator map.
 //
-//     E is Curve25519 (in Edwards coordinates), h is SHA3.
+//     E is Curve25519 (in Edwards coordinates), h is SHA512.
 //     f is the elligator map (bytes->E) that covers half of E.
 //     8 is the cofactor of E, the group order is 8*l for prime l.
 //     Setup : the prover publicly commits to a public key (P : E)
@@ -15,26 +15,26 @@
 //     Check : E -> names -> vrfs -> proofs -> bool
 //         Check(P, n, vrf, (c,t,ii)) = vrf == h(n, ii)
 //                                     && c == h(n, g^t*P^c, H(n)^t*ii^c)
-package vrf
+package ed25519
 
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha512"
 	"errors"
 	"io"
 
-	"golang.org/x/crypto/sha3"
-
 	"github.com/coniks-sys/coniks-go/crypto/internal/ed25519/edwards25519"
 	"github.com/coniks-sys/coniks-go/crypto/internal/ed25519/extra25519"
+
 	"golang.org/x/crypto/ed25519"
 )
 
 const (
-	PublicKeySize    = 32
-	PrivateKeySize   = 64
+	PublicKeySize    = ed25519.PublicKeySize
+	PrivateKeySize   = ed25519.PrivateKeySize
 	Size             = 32
-	intermediateSize = 32
+	intermediateSize = ed25519.PublicKeySize
 	ProofSize        = 32 + 32 + intermediateSize
 )
 
@@ -51,20 +51,8 @@ func GenerateKey(rnd io.Reader) (sk PrivateKey, err error) {
 	if rnd == nil {
 		rnd = rand.Reader
 	}
-	sk = make([]byte, 64)
-	_, err = io.ReadFull(rnd, sk[:32])
-	if err != nil {
-		return
-	}
-	x, _ := sk.expandSecret()
-
-	var pkP edwards25519.ExtendedGroupElement
-	edwards25519.GeScalarMultBase(&pkP, x)
-	var pkBytes [PublicKeySize]byte
-	pkP.ToBytes(&pkBytes)
-
-	copy(sk[32:], pkBytes[:])
-	return
+	_, skr, err := ed25519.GenerateKey(rnd)
+	return PrivateKey(skr), err
 }
 
 // Public extracts the public VRF key from the underlying private-key
@@ -76,10 +64,9 @@ func (sk PrivateKey) Public() (PublicKey, bool) {
 
 func (sk PrivateKey) expandSecret() (x, skhr *[32]byte) {
 	x, skhr = new([32]byte), new([32]byte)
-	hash := sha3.NewShake256()
-	hash.Write(sk[:32])
-	hash.Read(x[:])
-	hash.Read(skhr[:])
+	skh := sha512.Sum512(sk[:32])
+	copy(x[:], skh[:])
+	copy(skhr[:], skh[32:])
 	x[0] &= 248
 	x[31] &= 127
 	x[31] |= 64
@@ -95,18 +82,17 @@ func (sk PrivateKey) Compute(m []byte) []byte {
 	edwards25519.GeScalarMult(&ii, x, hashToCurve(m))
 	ii.ToBytes(&iiB)
 
-	hash := sha3.NewShake256()
-	hash.Write(iiB[:]) // const length: Size
-	hash.Write(m)
-	var vrf [Size]byte
-	hash.Read(vrf[:])
-	return vrf[:]
+	vrf := sha512.New()
+	vrf.Write(iiB[:]) // const length: Size
+	vrf.Write(m)
+	return vrf.Sum(nil)[:32]
 }
 
 func hashToCurve(m []byte) *edwards25519.ExtendedGroupElement {
 	// H(n) = (f(h(n))^8)
+	hmbH := sha512.Sum512(m)
 	var hmb [32]byte
-	sha3.ShakeSum256(hmb[:], m)
+	copy(hmb[:], hmbH[:])
 	var hm edwards25519.ExtendedGroupElement
 	extra25519.HashToEdwards(&hm, &hmb)
 	edwards25519.GeDouble(&hm, &hm)
@@ -130,11 +116,11 @@ func (sk PrivateKey) Prove(m []byte) (vrf, proof []byte) {
 	ii.ToBytes(&hxB)
 
 	// use hash of private-, public-key and msg as randomness source:
-	hash := sha3.NewShake256()
+	hash := sha512.New()
 	hash.Write(skhr[:])
 	hash.Write(sk[32:]) // public key, as in ed25519
 	hash.Write(m)
-	hash.Read(rH[:])
+	hash.Sum(rH[:0])
 	hash.Reset()
 	edwards25519.ScReduce(&r, &rH)
 
@@ -152,7 +138,7 @@ func (sk PrivateKey) Prove(m []byte) (vrf, proof []byte) {
 	hash.Write(grB[:])
 	hash.Write(hrB[:])
 	hash.Write(m)
-	hash.Read(sH[:])
+	hash.Sum(sH[:0])
 	hash.Reset()
 	edwards25519.ScReduce(&s, &sH)
 
@@ -164,10 +150,10 @@ func (sk PrivateKey) Prove(m []byte) (vrf, proof []byte) {
 	copy(proof[32:64], t[:])
 	copy(proof[64:96], hxB[:])
 
+	hash.Reset()
 	hash.Write(hxB[:])
 	hash.Write(m)
-	vrf = make([]byte, Size)
-	hash.Read(vrf[:])
+	vrf = hash.Sum(nil)[:Size]
 	return
 }
 
@@ -184,12 +170,10 @@ func (pkBytes PublicKey) Verify(m, vrfBytes, proof []byte) bool {
 	copy(t[:32], proof[32:64])
 	copy(hxB[:], proof[64:96])
 
-	hash := sha3.NewShake256()
+	hash := sha512.New()
 	hash.Write(hxB[:]) // const length
 	hash.Write(m)
-	var hCheck [Size]byte
-	hash.Read(hCheck[:])
-	if !bytes.Equal(hCheck[:], vrf[:]) {
+	if !bytes.Equal(hash.Sum(nil)[:Size], vrf[:Size]) {
 		return false
 	}
 	hash.Reset()
@@ -224,7 +208,7 @@ func (pkBytes PublicKey) Verify(m, vrfBytes, proof []byte) bool {
 	hash.Write(ABytes[:]) // const length (g^t*G^s)
 	hash.Write(BBytes[:]) // const length (H1(m)^t*v^s)
 	hash.Write(m)
-	hash.Read(sH[:])
+	hash.Sum(sH[:0])
 
 	edwards25519.ScReduce(&sRef, &sH)
 	return sRef == s
