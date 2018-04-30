@@ -15,7 +15,7 @@
 //     Check : E -> names -> vrfs -> proofs -> bool
 //         Check(P, n, vrf, (c,t,ii)) = vrf == h(n, ii)
 //                                     && c == h(n, g^t*P^c, H(n)^t*ii^c)
-package ed25519
+package vrf
 
 import (
 	"bytes"
@@ -24,8 +24,8 @@ import (
 	"errors"
 	"io"
 
-	"github.com/coniks-sys/coniks-go/crypto/internal/ed25519/edwards25519"
-	"github.com/coniks-sys/coniks-go/crypto/internal/ed25519/extra25519"
+	"github.com/nknorg/coniks-go/crypto/ed25519/edwards25519"
+	"github.com/nknorg/coniks-go/crypto/ed25519/extra25519"
 
 	"golang.org/x/crypto/ed25519"
 )
